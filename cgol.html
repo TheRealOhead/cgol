@@ -1,0 +1,368 @@
+<!DOCTYPE html>
+<html>
+<head>
+	<meta charset="utf-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Conway's Game of Life</title>
+	<style>
+		#tooltip {
+			position: fixed;
+			background-color: white;
+			display: none;
+		}
+		canvas {
+			cursor: crosshair;
+		}
+		a {
+			text-decoration: none;
+		}
+	</style>
+</head>
+<body>
+	<div id="status">
+		<span id="logic-fps"></span><br>
+		<span id="fps"></span><br>
+		<span id="total-delay"></span><br>
+	</div>
+	<canvas></canvas>
+	<div id="tooltip">Test</div>
+	<script>
+		let logicFpsElement = document.getElementById('logic-fps');
+		let fpsElement = document.getElementById('fps');
+		let totalDelayElement = document.getElementById('total-delay');
+		let statusElement = document.getElementById('status');
+		let c = document.getElementsByTagName('canvas')[0];
+		let ctx = c.getContext('2d');
+
+		let scheduledFuctions = [];
+		function schedule(func) {
+			scheduledFuctions.push(func);
+		}
+
+
+		/////////////
+		// TOOLTIP //
+		/////////////
+
+		let tooltip = {
+			element:document.getElementById('tooltip'),
+			x:0,
+			y:0
+		};
+		document.addEventListener('mousemove',(e)=>{
+			tooltip.element.style.left = `${e.clientX + 20}px`;
+			tooltip.element.style.top = `${e.clientY + 20}px`;
+		})
+		c.addEventListener('mouseleave',()=>{
+			tooltip.element.style.display = 'none';
+		})
+		c.addEventListener('mouseenter',()=>{
+			tooltip.element.style.display = 'block';
+		})
+		c.addEventListener('click',()=>{
+			world.current.array[tooltip.y][tooltip.x] = world.current.array[tooltip.y][tooltip.x]>0?0:1;
+		})
+		function updateTooltip() {
+			let cell = world.current.array[tooltip.y][tooltip.x];
+			let age = cell>0?cell-1:-cell;
+			if (age > Number.MAX_VALUE - 1) {
+				age = 'Really old';
+			};
+			tooltip.element.innerHTML = (`
+				X: ${tooltip.x}<br>
+				Y: ${tooltip.y}<br>
+				Status: ${cell>0?'Alive':'Dead'}<br>
+				Age: ${age}
+				`);
+		};
+		c.addEventListener('mousemove',(e)=>{
+			let r = c.getBoundingClientRect();
+			tooltip.x = Math.floor((e.clientX - r.left) / world.squareSize);
+			tooltip.y = Math.max(Math.floor((e.clientY - r.top) / world.squareSize),0);
+			updateTooltip();
+		})
+
+
+		//////////
+		// GRID //
+		//////////
+
+		class Grid {
+			constructor(x,y) {
+				this.array = [];
+				for (let i = 0; i < y; i++) {
+					this.array[i] = [];
+					for (let j = 0; j < x; j++) {
+						this.array[i][j] = 0;
+					}
+				}
+			}
+			duplicate() {
+				let other = new this.constructor(this.array[0].length,this.array.length);
+
+				this.array.forEach((y,i)=>{
+					y.forEach((x,j)=>{
+						other.array[i][j] = x;
+					});
+				})
+
+				return other;
+			}
+			draw() {
+				let startTime = new Date().getTime();
+
+				// Clear the canvas
+				ctx.fillStyle = '#000';
+				ctx.fillRect(0,0,world.width * world.squareSize,world.height * world.squareSize);
+
+				// Now fill in the cells
+				ctx.fillStyle = '#fff';
+				this.array.forEach((column,y)=>{
+					column.forEach((cell,x)=>{
+						if (cellAgeCheckbox.checked) {
+							let colorConst = cell;
+							if (cell > 0) {
+								ctx.fillStyle = `rgb(${256-colorConst},256,${colorConst})`;
+							}
+							else {
+								ctx.fillStyle = `rgb(${256+colorConst},0,${-colorConst})`;
+							}
+						}
+						if (cell > 0 || cellAgeCheckbox.checked)
+							ctx.fillRect(world.squareSize * x,world.squareSize * y,world.squareSize,world.squareSize)
+					})
+				});
+
+				ctx.fillStyle = '#fff';
+				if (world.drawGridlines) {
+					// Draw vertical
+					for (let x = 0; x < world.width; x++) {
+						ctx.fillRect(x * world.squareSize, 0, 1, world.height * world.squareSize);
+					};
+
+					// Draw horizontal gridlines
+					for (let y = 0; y < world.height; y++) {
+						ctx.fillRect(0, y * world.squareSize, world.width * world.squareSize, 1);
+					};
+				}
+
+				// Return frametime
+				return new Date().getTime() - startTime;
+			}
+			iteration() {
+				let checkCell = (x,y)=>{
+					if (this.array[y] == undefined || this.array[y][x] == undefined) { // Literal edge case hahaha!!!
+						// No need for break statements because we're returning
+						switch (world.boundaryCondition) {
+							case 'dead': return 0;
+							case 'alive': return 1;
+							case 'torus':
+							x = (x + this.array[0].length) % this.array[0].length;
+							y = (y + this.array.length) % this.array.length;
+							break;
+							default: return 0;
+						}
+					};
+					return this.array[y][x] > 0;
+				}
+
+				let other = new this.constructor(this.array[0].length,this.array.length);
+				let array = other.array;
+				this.array.forEach((column,y)=>{
+					column.forEach((cell,x)=>{
+						// At this point this might as well be a black box...
+						let α,β,γ,δ;
+						let sum = checkCell(α=x+1,β=y+1) + checkCell(α,y) + checkCell(α,γ=y-1)
+							    + checkCell(x,β)   /* Don't count self */ + checkCell(x,γ)
+							    + checkCell(δ=x-1,β)     + checkCell(δ,y) + checkCell(δ,γ);
+
+						// The true logic at the center of it all
+						if (world.birthNumbers.includes(sum) && cell <= 0) { // Birth
+							array[y][x] = 1;
+							return;
+						}
+						if (cell > 0 && !world.surviveNumbers.includes(sum)) { // Death
+							array[y][x] = 0;
+							return;
+						}
+						if (cell > 0)
+							array[y][x] = cell + 1;
+						else 
+							array[y][x] = cell - 1;
+					});
+				});
+
+				return other;
+
+			}
+			fillWithRandom(ratio) {
+				this.array.forEach((column,y)=>{
+					column.forEach((cell,x)=>{
+						if (ratio > Math.random()) {
+							this.array[y][x] = 1;
+						} else {
+							this.array[y][x] = 0;
+						}
+					})
+				});
+			}
+		}
+
+		///////////////////
+		// HTML SETTINGS //
+		///////////////////
+
+		function addSetting(desc,type,value,hardUpdate,min) {
+			let element = document.createElement('input');
+			element.min = min;
+			element.type = type;
+			element.value = value;
+			element.doesHardUpdate = !!hardUpdate;
+			element.addEventListener('change',(e)=>{
+				schedule(()=>{world.update(e.srcElement.doesHardUpdate)});
+			});
+			document.body.appendChild(element);
+			let label = document.createElement('span');
+			label.innerHTML = `${desc}<br>`;
+			document.body.appendChild(label);
+			return element;	
+		}
+
+		function addButton(name,func) {
+			let button = document.createElement('button');
+			button.innerHTML = name;
+			button.addEventListener('click',func);
+			document.body.appendChild(button);
+			document.body.appendChild(document.createElement('br'));
+			return button;
+		}
+
+		gridlineCheckbox = addSetting('Draw gridlines','checkbox');
+		gridlineCheckbox.checked = false;
+
+		cellAgeCheckbox = addSetting('Draw colors for cell age','checkbox');
+		cellAgeCheckbox.checked = false;
+
+		pauseCheckbox = addSetting('Pause simulation','checkbox');
+		pauseCheckbox.checked = false;
+
+		widthInput = addSetting('Width','number',40,true,1);
+		heightInput = addSetting('Height','number',40,true,1);
+		squareSizeInput = addSetting('Square Size','number',10,false,1);
+		intervalInput = addSetting('ms interval','number',10,false,10);
+		restartButton = addButton('Restart',()=>{schedule(()=>{world.update(true)})});
+		rulestringInput = addSetting('Rulestring (B/S) <a href="https://conwaylife.com/wiki/Rulestring" title="Supports B/S and S/B notation. Click for more info." target="_blank">🛈</a>','text','B3/S23')
+
+		boundaryConditionSelect = document.createElement('select');
+		boundaryConditionSelect.addEventListener('change',()=>{
+			world.update();
+		})
+		let addOption = (parent,value,name) => {
+			let option = document.createElement('option');
+			option.value = value;
+			option.innerHTML = name;
+			boundaryConditionSelect.appendChild(option);
+		};
+		addOption(boundaryConditionSelect,'torus','Wrap around (Surface of torus)');
+		addOption(boundaryConditionSelect,'dead','All Dead');
+		addOption(boundaryConditionSelect,'alive','All Alive');
+
+		document.body.appendChild(boundaryConditionSelect);
+		document.body.appendChild(label = document.createElement('span'))
+		label.innerHTML = 'Boundary Condition <a href="https://conwaylife.com/wiki/Bounded_grids" title="How cells react to the borders of the grid. Click for more info." target="_blank">🛈</a>';
+
+		///////////
+		// WORLD //
+		///////////
+
+		let world = {
+			squareSize:5,
+			current:null,
+			birthNumbers:[],
+			surviveNumbers:[],
+			draw() {
+				return this.current.draw();
+			},
+			iterate() {
+				let startTime = new Date().getTime();
+				this.current = this.current.iteration();
+				return new Date().getTime() - startTime;
+			},
+			update(hard) {
+				this.width = widthInput.value;
+				this.height = heightInput.value;
+				this.squareSize = squareSizeInput.value;
+				this.drawGridlines = gridlineCheckbox.checked;
+				this.interval = (Math.max(Math.floor(intervalInput.value / 10),1));
+				this.boundaryCondition = boundaryConditionSelect.value;
+				this.pause = pauseCheckbox.checked;
+				
+				c.style.width = `${c.width = world.width * world.squareSize}px`;
+				c.style.height = `${c.height = world.height * world.squareSize}px`;
+
+
+				// Rulestring decoding
+				let rulestring = rulestringInput.value;
+				rulestring = rulestring.split('/');
+				rulestring[0] = rulestring[0].split('');
+				rulestring[1] = rulestring[1].split('');
+				if (rulestring[0][0] == 'B' && rulestring[1][0] == 'S') {
+					rulestring[0].shift();
+					rulestring[1].shift();
+				} else {
+					let temp = rulestring[0];
+					rulestring[0] = rulestring[1];
+					rulestring[1] = temp;
+					delete temp;
+				}
+				rulestring.forEach(set=>{
+					set.forEach((value,i)=>{
+						set[i] = +value;
+					})
+				});
+				this.birthNumbers = rulestring[0];
+				this.surviveNumbers = rulestring[1];
+				
+				if (hard) {
+					world.current = new Grid(world.width,world.height);
+					world.current.fillWithRandom(.5);
+				};
+
+			}
+		};
+
+		//////////////
+		// INTERVAL //
+		//////////////
+
+		world.update(true);
+
+		function step() {
+			let logicms = world.pause?0:world.iterate();
+			logicFpsElement.innerHTML = `${logicms}ms / ${world.interval * 10}ms to think`;
+
+			updateTooltip();
+
+			let renderms = world.draw();
+			fpsElement.innerHTML = `${renderms}ms / ${world.interval * 10}ms to draw`;
+
+			let ms = renderms + logicms;
+
+			totalDelayElement.innerHTML = `${ms}ms / ${world.interval * 10}ms total`;
+
+			ms>world.interval*10?statusElement.style.color='#f00':statusElement.style.color='#000';
+		}
+
+		let i = 0;
+		setInterval(()=>{
+			i++;
+			if (i % world.interval == 0) {
+				while (scheduledFuctions.length) {
+					scheduledFuctions.pop()();
+				};
+				step();
+			}
+		},10);
+	</script>
+</body>
+</html>
